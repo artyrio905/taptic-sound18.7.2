@@ -40,6 +40,7 @@ struct ContentView: View {
                 Text("Haptic intensity: \(vm.intensity, specifier: "%.2f")")
 
                 Slider(value: $vm.userGain, in: 0.5...3.0, step: 0.05) {
+                    Toggle("Haptics only (mute speaker)", isOn: $vm.hapticsOnly)
                     Text("Gain")
                 }
                 Text("Gain: \(vm.userGain, specifier: "%.2f") (stronger vibro)")
