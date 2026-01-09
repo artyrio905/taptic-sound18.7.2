@@ -11,16 +11,20 @@ final class AudioHapticEngine {
 
     private var onIntensity: ((Double) -> Void)?
 
-    // Для режима “только хаптика”
+    // haptics-only mode
     private var hapticsTimer: DispatchSourceTimer?
     private var fileReader: AVAudioFile?
     private var readFramePos: AVAudioFramePosition = 0
     private var framesPerTick: AVAudioFrameCount = 1024
 
-    func start(url: URL, gain: Double, hapticsOnly: Bool, onIntensity: @escaping (Double) -> Void) throws {
+    func start(
+        url: URL,
+        gain: Double,
+        hapticsOnly: Bool,
+        onIntensity: @escaping (Double) -> Void
+    ) throws {
         self.onIntensity = onIntensity
 
-        // Аудио сессия: playback, но если hapticsOnly — громкость = 0 (и мы не запускаем player.play())
         try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
         try AVAudioSession.sharedInstance().setActive(true)
 
@@ -28,10 +32,8 @@ final class AudioHapticEngine {
         try startContinuousHaptic()
 
         if hapticsOnly {
-            // НЕ играем звук. Читаем файл по кускам и обновляем хаптику таймером.
             try startHapticsOnlyMode(url: url, gain: gain)
         } else {
-            // Обычный режим: играет звук + параллельно анализ
             try startAudioAndTapMode(url: url, gain: gain)
         }
     }
@@ -90,8 +92,7 @@ final class AudioHapticEngine {
         readFramePos = 0
 
         let sr = file.processingFormat.sampleRate
-        // Частота обновления хаптики: ~120 раз/сек (можно 60..180)
-        let tickHz: Double = 120
+        let tickHz: Double = 120 // 60..180 можно тюнить
         framesPerTick = AVAudioFrameCount(max(256, Int(sr / tickHz)))
 
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInteractive))
@@ -101,25 +102,22 @@ final class AudioHapticEngine {
             guard let self else { return }
             guard let file = self.fileReader else { return }
 
-            // читаем кусок
             let format = file.processingFormat
             let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: self.framesPerTick)!
+
             do {
                 file.framePosition = self.readFramePos
                 try file.read(into: buf, frameCount: self.framesPerTick)
                 self.readFramePos += AVAudioFramePosition(buf.frameLength)
 
                 if buf.frameLength == 0 {
-                    // конец файла
                     self.stop()
                     return
                 }
 
                 let (amp, brightness) = self.features(buffer: buf)
                 self.pushHaptics(amp: amp, brightness: brightness, gain: gain)
-
             } catch {
-                // если чтение упало — стоп
                 self.stop()
             }
         }
@@ -128,8 +126,7 @@ final class AudioHapticEngine {
         timer.resume()
     }
 
-    // MARK: - Audio features (очень простые)
-    // amp = RMS амплитуда, brightness = грубо "насколько сигнал резкий" (по абсолютной разнице сэмплов)
+    // MARK: - Audio features
     private func features(buffer: AVAudioPCMBuffer) -> (amp: Double, brightness: Double) {
         guard let channel = buffer.floatChannelData?[0] else { return (0, 0) }
         let n = Int(buffer.frameLength)
@@ -147,12 +144,11 @@ final class AudioHapticEngine {
         }
 
         let rms = sqrt(sumSq / Double(n))
-        let brightness = min(1.0, (diffSum / Double(n)) * 30.0) // тюнинг
+        let brightness = min(1.0, (diffSum / Double(n)) * 30.0)
         return (rms, brightness)
     }
 
     private func pushHaptics(amp: Double, brightness: Double, gain: Double) {
-        // Нормализация под вибрации
         let intensity = min(1.0, max(0.0, (amp * 18.0) * gain))
         let sharp = min(1.0, max(0.0, 0.10 + brightness * 0.90))
 
