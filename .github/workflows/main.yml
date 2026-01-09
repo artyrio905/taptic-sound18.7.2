@@ -4,8 +4,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+ build:
     runs-on: macos-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -14,8 +15,7 @@ jobs:
         run: brew install xcodegen
 
       - name: Generate Xcode project
-        run: |
-          xcodegen generate --spec project.yml
+        run: xcodegen generate --spec project.yml
 
       - name: Build unsigned (no codesign)
         run: |
@@ -28,6 +28,7 @@ jobs:
             -configuration "$CONFIG" \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
+            -derivedDataPath DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -36,9 +37,10 @@ jobs:
       - name: Package .app -> .ipa
         run: |
           set -e
-          APP_PATH=$(find DerivedData/Build/Products -maxdepth 4 -name "*.app" -print -quit)
+          APP_PATH=$(find DerivedData/Build/Products -maxdepth 4 -path "*Release-iphoneos/*.app" -print -quit)
           if [ -z "$APP_PATH" ]; then
-            echo "APP not found"; exit 1
+            echo "APP not found"
+            exit 1
           fi
 
           mkdir -p Payload
