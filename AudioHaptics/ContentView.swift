@@ -24,6 +24,9 @@ struct ContentView: View {
             }
 
             HStack(spacing: 12) {
+                Button("Test") { vm.testHaptic() }
+                    .buttonStyle(.bordered)
+                
                 Button("Import") { vm.showImporter = true }
                     .buttonStyle(.bordered)
 
