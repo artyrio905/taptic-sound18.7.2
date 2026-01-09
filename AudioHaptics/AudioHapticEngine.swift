@@ -11,42 +11,39 @@ final class AudioHapticEngine {
 
     private var onIntensity: ((Double) -> Void)?
 
-    func start(url: URL, gain: Double, onIntensity: @escaping (Double) -> Void) throws {
+    // Для режима “только хаптика”
+    private var hapticsTimer: DispatchSourceTimer?
+    private var fileReader: AVAudioFile?
+    private var readFramePos: AVAudioFramePosition = 0
+    private var framesPerTick: AVAudioFrameCount = 1024
+
+    func start(url: URL, gain: Double, hapticsOnly: Bool, onIntensity: @escaping (Double) -> Void) throws {
         self.onIntensity = onIntensity
 
-        let file = try AVAudioFile(forReading: url)
-
-        audioEngine.stop()
-        audioEngine.reset()
-
-        audioEngine.attach(player)
-        audioEngine.connect(player, to: audioEngine.mainMixerNode, format: file.processingFormat)
-
-        let bus = 0
-        let format = audioEngine.mainMixerNode.outputFormat(forBus: bus)
-
-        audioEngine.mainMixerNode.removeTap(onBus: bus)
-        audioEngine.mainMixerNode.installTap(onBus: bus, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            guard let self else { return }
-            let amp = self.rmsAmplitude(buffer: buffer)
-
-            let normalized = min(1.0, max(0.0, (amp * 18.0) * gain))
-            self.onIntensity?(normalized)
-            self.updateHaptics(intensity: normalized)
-        }
-
+        // Аудио сессия: playback, но если hapticsOnly — громкость = 0 (и мы не запускаем player.play())
         try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
         try AVAudioSession.sharedInstance().setActive(true)
 
-        try audioEngine.start()
-        player.scheduleFile(file, at: nil, completionHandler: nil)
-        player.play()
-
         try startHapticsIfPossible()
         try startContinuousHaptic()
+
+        if hapticsOnly {
+            // НЕ играем звук. Читаем файл по кускам и обновляем хаптику таймером.
+            try startHapticsOnlyMode(url: url, gain: gain)
+        } else {
+            // Обычный режим: играет звук + параллельно анализ
+            try startAudioAndTapMode(url: url, gain: gain)
+        }
     }
 
     func stop() {
+        // stop timer mode
+        hapticsTimer?.cancel()
+        hapticsTimer = nil
+        fileReader = nil
+        readFramePos = 0
+
+        // stop audio engine mode
         audioEngine.mainMixerNode.removeTap(onBus: 0)
         player.stop()
         audioEngine.stop()
@@ -61,19 +58,109 @@ final class AudioHapticEngine {
         onIntensity?(0.0)
     }
 
-    private func rmsAmplitude(buffer: AVAudioPCMBuffer) -> Double {
-        guard let channelData = buffer.floatChannelData?[0] else { return 0.0 }
-        let frameLength = Int(buffer.frameLength)
-        if frameLength == 0 { return 0.0 }
+    // MARK: - Mode A: audio plays, analyze via tap
+    private func startAudioAndTapMode(url: URL, gain: Double) throws {
+        let file = try AVAudioFile(forReading: url)
 
-        var sum: Double = 0
-        for i in 0..<frameLength {
-            let x = Double(channelData[i])
-            sum += x * x
+        audioEngine.stop()
+        audioEngine.reset()
+
+        audioEngine.attach(player)
+        audioEngine.connect(player, to: audioEngine.mainMixerNode, format: file.processingFormat)
+
+        let bus = 0
+        let format = audioEngine.mainMixerNode.outputFormat(forBus: bus)
+
+        audioEngine.mainMixerNode.removeTap(onBus: bus)
+        audioEngine.mainMixerNode.installTap(onBus: bus, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            guard let self else { return }
+            let (amp, brightness) = self.features(buffer: buffer)
+            self.pushHaptics(amp: amp, brightness: brightness, gain: gain)
         }
-        return sqrt(sum / Double(frameLength))
+
+        try audioEngine.start()
+        player.scheduleFile(file, at: nil, completionHandler: nil)
+        player.play()
     }
 
+    // MARK: - Mode B: haptics only (speaker muted)
+    private func startHapticsOnlyMode(url: URL, gain: Double) throws {
+        let file = try AVAudioFile(forReading: url)
+        fileReader = file
+        readFramePos = 0
+
+        let sr = file.processingFormat.sampleRate
+        // Частота обновления хаптики: ~120 раз/сек (можно 60..180)
+        let tickHz: Double = 120
+        framesPerTick = AVAudioFrameCount(max(256, Int(sr / tickHz)))
+
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInteractive))
+        timer.schedule(deadline: .now(), repeating: 1.0 / tickHz)
+
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            guard let file = self.fileReader else { return }
+
+            // читаем кусок
+            let format = file.processingFormat
+            let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: self.framesPerTick)!
+            do {
+                file.framePosition = self.readFramePos
+                try file.read(into: buf, frameCount: self.framesPerTick)
+                self.readFramePos += AVAudioFramePosition(buf.frameLength)
+
+                if buf.frameLength == 0 {
+                    // конец файла
+                    self.stop()
+                    return
+                }
+
+                let (amp, brightness) = self.features(buffer: buf)
+                self.pushHaptics(amp: amp, brightness: brightness, gain: gain)
+
+            } catch {
+                // если чтение упало — стоп
+                self.stop()
+            }
+        }
+
+        hapticsTimer = timer
+        timer.resume()
+    }
+
+    // MARK: - Audio features (очень простые)
+    // amp = RMS амплитуда, brightness = грубо "насколько сигнал резкий" (по абсолютной разнице сэмплов)
+    private func features(buffer: AVAudioPCMBuffer) -> (amp: Double, brightness: Double) {
+        guard let channel = buffer.floatChannelData?[0] else { return (0, 0) }
+        let n = Int(buffer.frameLength)
+        if n == 0 { return (0, 0) }
+
+        var sumSq: Double = 0
+        var diffSum: Double = 0
+
+        var prev = Double(channel[0])
+        for i in 0..<n {
+            let x = Double(channel[i])
+            sumSq += x * x
+            diffSum += abs(x - prev)
+            prev = x
+        }
+
+        let rms = sqrt(sumSq / Double(n))
+        let brightness = min(1.0, (diffSum / Double(n)) * 30.0) // тюнинг
+        return (rms, brightness)
+    }
+
+    private func pushHaptics(amp: Double, brightness: Double, gain: Double) {
+        // Нормализация под вибрации
+        let intensity = min(1.0, max(0.0, (amp * 18.0) * gain))
+        let sharp = min(1.0, max(0.0, 0.10 + brightness * 0.90))
+
+        onIntensity?(intensity)
+        updateHaptics(intensity: intensity, sharpness: sharp)
+    }
+
+    // MARK: - Haptics
     private func startHapticsIfPossible() throws {
         guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
         hapticEngine = try CHHapticEngine()
@@ -90,7 +177,7 @@ final class AudioHapticEngine {
             eventType: .hapticContinuous,
             parameters: [intensity, sharpness],
             relativeTime: 0,
-            duration: 60
+            duration: 120
         )
 
         let pattern = try CHHapticPattern(events: [event], parameters: [])
@@ -98,21 +185,13 @@ final class AudioHapticEngine {
         try hapticPlayer?.start(atTime: 0)
     }
 
-    private func updateHaptics(intensity: Double) {
+    private func updateHaptics(intensity: Double, sharpness: Double) {
         guard let hapticPlayer else { return }
 
-        let i = Float(intensity)
-        let s = Float(min(1.0, max(0.0, 0.15 + intensity * 0.85)))
-
         let params = [
-            CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: i, relativeTime: 0),
-            CHHapticDynamicParameter(parameterID: .hapticSharpnessControl, value: s, relativeTime: 0)
+            CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: Float(intensity), relativeTime: 0),
+            CHHapticDynamicParameter(parameterID: .hapticSharpnessControl, value: Float(sharpness), relativeTime: 0)
         ]
-
-        do {
-            try hapticPlayer.sendParameters(params, atTime: 0)
-        } catch {
-            // ignore hiccups
-        }
+        try? hapticPlayer.sendParameters(params, atTime: 0)
     }
 }
