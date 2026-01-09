@@ -8,6 +8,8 @@ final class HapticPlayerViewModel: ObservableObject {
     @Published var isPlaying = false
     @Published var intensity: Double = 0.0
     @Published var userGain: Double = 1.0
+
+    // NEW: выключает звук, оставляет только вибрации
     @Published var hapticsOnly: Bool = false
 
     private let engine = AudioHapticEngine()
@@ -58,7 +60,11 @@ final class HapticPlayerViewModel: ObservableObject {
         if isPlaying { return }
 
         do {
-            try engine.start(url: url, gain: userGain, hapticsOnly: hapticsOnly) { [weak self] currentIntensity in
+            try engine.start(
+                url: url,
+                gain: userGain,
+                hapticsOnly: hapticsOnly
+            ) { [weak self] currentIntensity in
                 Task { @MainActor in
                     self?.intensity = currentIntensity
                 }
