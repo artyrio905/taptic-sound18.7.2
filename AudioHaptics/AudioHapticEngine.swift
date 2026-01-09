@@ -211,19 +211,20 @@ final class AudioHapticEngine {
     }
 
     private func startContinuousHaptic() throws {
-    guard let hapticEngine else { return }
+        guard let hapticEngine else { return }
 
-    let intensity = CHHapticEventParameter(parameterID: .hapticIntensity, value: 0.0)
-    let sharpness = CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.3)
+        let intensity = CHHapticEventParameter(parameterID: .hapticIntensity, value: 0.0)
+        let sharpness = CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.3)
 
-    let event = CHHapticEvent(
-        eventType: .hapticContinuous,
-        parameters: [intensity, sharpness],
-        relativeTime: 0,
-        duration: 120
-    )
+        let event = CHHapticEvent(
+            eventType: .hapticContinuous,
+            parameters: [intensity, sharpness],
+            relativeTime: 0,
+            duration: 120
+        )
 
-    let pattern = try CHHapticPattern(events: [event], parameters: [])
-    hapticPlayer = try hapticEngine.makeAdvancedPlayer(with: pattern)
-    try hapticPlayer?.start(atTime: 0)
+        let pattern = try CHHapticPattern(events: [event], parameters: [])
+        hapticPlayer = try hapticEngine.makeAdvancedPlayer(with: pattern)
+        try hapticPlayer?.start(atTime: 0)
+    }
 }
