@@ -7,20 +7,19 @@ final class HapticPlayerViewModel: ObservableObject {
     @Published var isRunning: Bool = false
     @Published var hapticsOnly: Bool = false
     @Published var gain: Double = 1.0
+    @Published var pickedURL: URL? = nil
 
     private let engine = AudioHapticEngine()
 
-    func startWithBundledFile() {
-        guard let url = Bundle.main.url(forResource: "song", withExtension: "mp3") else {
-            print("ERROR: song.mp3 not found in bundle")
+    func start() {
+        guard let url = pickedURL else {
+            print("No MP3 selected")
             return
         }
 
         do {
-            try engine.start(url: url, gain: gain, hapticsOnly: hapticsOnly) { [weak self] value in
-                Task { @MainActor in
-                    self?.intensity = value
-                }
+            try engine.start(url: url, gain: gain, hapticsOnly: hapticsOnly) { [weak self] v in
+                Task { @MainActor in self?.intensity = v }
             }
             isRunning = true
         } catch {
