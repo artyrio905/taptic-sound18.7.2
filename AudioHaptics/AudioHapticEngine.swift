@@ -26,8 +26,9 @@ final class AudioHapticEngine {
     ) throws {
         self.onIntensity = onIntensity
 
-        try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-        try AVAudioSession.sharedInstance().setActive(true)
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playback, mode: .default)
+        try session.setActive(true)
 
         try startHapticsIfPossible()
         try startContinuousHaptic()
@@ -178,7 +179,6 @@ final class AudioHapticEngine {
     }
 
     private func pushHaptics(amp: Double, brightness: Double, gain: Double) {
-        // чтобы всегда ощущалось — минимальный порог 0.12
         let intensity = min(1.0, max(0.12, (amp * 18.0) * gain))
         let sharp = min(1.0, max(0.10, 0.10 + brightness * 0.90))
 
@@ -189,23 +189,28 @@ final class AudioHapticEngine {
     // MARK: - Haptics
     private func startHapticsIfPossible() throws {
         guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
-        hapticEngine = try CHHapticEngine()
+
+        let engine = try CHHapticEngine()
+        engine.isAutoShutdownEnabled = false
+
+        engine.stoppedHandler = { reason in
+            print("Haptics stopped:", reason.rawValue)
+        }
+        engine.resetHandler = { [weak self] in
+            guard let self else { return }
+            do {
+                try self.hapticEngine?.start()
+                try self.startContinuousHaptic()
+            } catch {
+                print("Haptics reset error:", error)
+            }
+        }
+
+        hapticEngine = engine
         try hapticEngine?.start()
     }
 
     private func startContinuousHaptic() throws {
         guard let hapticEngine else { return }
 
-        let intensity = CHHapticEventParameter(parameterID: .hapticIntensity, value: 0.0)
-        let sharpness = CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.3)
-
-        let event = CHHapticEvent(
-            eventType: .hapticContinuous,
-            parameters: [intensity, sharpness],
-            relativeTime: 0,
-            duration: 120
-        )
-
-        let pattern = try CHHapticPattern(events: [event], parameters: [])
-        hapticPlayer = try hapticEngine.makeAdvancedPlayer(with: pattern)
-        try hapticPlayer?.
+        let intensity =
