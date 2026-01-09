@@ -3,71 +3,50 @@ import UniformTypeIdentifiers
 import UIKit
 
 struct ContentView: View {
-    @EnvironmentObject private var vm: HapticPlayerViewModel
+    @StateObject private var vm = HapticPlayerViewModel()
 
     var body: some View {
         VStack(spacing: 16) {
-            Text("Audio → Taptic")
-                .font(.headline)
+            Text("Audio → Haptics")
+                .font(.title2)
+                .bold()
 
-            if let url = vm.audioURL {
-                Text(url.lastPathComponent)
-                    .font(.subheadline)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-            } else {
-                Text("Import an audio file (mp3/m4a/wav…) or Share it сюда.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
+            HStack {
+                Text("Intensity:")
+                Spacer()
+                Text(String(format: "%.2f", vm.intensity))
+                    .monospacedDigit()
+            }
+
+            ProgressView(value: vm.intensity)
+                .progressViewStyle(.linear)
+
+            Toggle("Haptics only (mute audio)", isOn: $vm.hapticsOnly)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Gain: \(String(format: "%.2f", vm.gain))")
+                Slider(value: $vm.gain, in: 0.2...2.5)
             }
 
             HStack(spacing: 12) {
-                Button("Test") { vm.testHaptic() }
-                    .buttonStyle(.bordered)
-                
-                Button("Import") { vm.showImporter = true }
-                    .buttonStyle(.bordered)
-
-                Button("Play") { vm.play() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(vm.audioURL == nil || vm.isPlaying)
-
-                Button("Stop") { vm.stop() }
-                    .buttonStyle(.bordered)
-                    .disabled(!vm.isPlaying)
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle("Haptics only (mute speaker)", isOn: $vm.hapticsOnly)
-
-                Text("Haptic intensity: \(vm.intensity, specifier: "%.2f")")
-
-                Slider(value: $vm.userGain, in: 0.5...3.0, step: 0.05) {
-                    Text("Gain")
+                Button(vm.isRunning ? "Stop" : "Start") {
+                    if vm.isRunning { vm.stop() } else { vm.startWithBundledFile() }
                 }
+                .buttonStyle(.borderedProminent)
 
-                Text("Gain: \(vm.userGain, specifier: "%.2f") (stronger vibro)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Button("Test") {
+                    vm.test()
+                }
+                .buttonStyle(.bordered)
             }
-            .padding(.top, 8)
-            .padding(.horizontal)
+
+            Text("Важно: добавь файл **song.mp3** в проект (Copy Bundle Resources).")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
 
             Spacer()
         }
         .padding()
-        .fileImporter(
-            isPresented: $vm.showImporter,
-            allowedContentTypes: [.audio],
-            allowsMultipleSelection: false
-        ) { result in
-            vm.handleImport(result)
-        }
-        .onDisappear {
-            vm.stop()
-        }
     }
 }
