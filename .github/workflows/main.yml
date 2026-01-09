@@ -1,0 +1,56 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned (no codesign)
+        run: |
+          set -e
+          SCHEME="AudioHaptics"
+          CONFIG="Release"
+
+          xcodebuild \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIG" \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build
+
+      - name: Package .app -> .ipa
+        run: |
+          set -e
+          APP_PATH=$(find build -path "*Release-iphoneos/*.app" -print -quit)
+          if [ -z "$APP_PATH" ]; then
+            # иногда xcodebuild кладёт в DerivedData, попробуем найти там
+            APP_PATH=$(find . -path "*Release-iphoneos/*.app" -print -quit)
+          fi
+          if [ -z "$APP_PATH" ]; then
+            echo "APP not found"; exit 1
+          fi
+
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          /usr/bin/zip -r App-unsigned.ipa Payload
+          rm -rf Payload
+
+      - name: Upload artifact (IPA)
+        uses: actions/upload-artifact@v4
+        with:
+          name: App-unsigned-ipa
+          path: App-unsigned.ipa
