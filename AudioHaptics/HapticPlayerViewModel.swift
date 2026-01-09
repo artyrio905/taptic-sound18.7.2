@@ -58,7 +58,7 @@ final class HapticPlayerViewModel: ObservableObject {
         if isPlaying { return }
 
         do {
-            try engine.start(url: url, gain: userGain) { [weak self] currentIntensity in
+            try engine.start(url: url, gain: userGain, hapticsOnly: hapticsOnly) { [weak self] currentIntensity in
                 Task { @MainActor in
                     self?.intensity = currentIntensity
                 }
