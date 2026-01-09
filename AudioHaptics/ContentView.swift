@@ -44,6 +44,26 @@ struct ContentView: View {
                 Slider(value: $vm.userGain, in: 0.5...3.0, step: 0.05) {
                     Text("Gain")
                 }
+
                 Text("Gain: \(vm.userGain, specifier: "%.2f") (stronger vibro)")
                     .font(.caption)
-                    .foregroundSt
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 8)
+            .padding(.horizontal)
+
+            Spacer()
+        }
+        .padding()
+        .fileImporter(
+            isPresented: $vm.showImporter,
+            allowedContentTypes: [.audio],
+            allowsMultipleSelection: false
+        ) { result in
+            vm.handleImport(result)
+        }
+        .onDisappear {
+            vm.stop()
+        }
+    }
+}
