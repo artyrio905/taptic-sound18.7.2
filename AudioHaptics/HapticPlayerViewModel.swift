@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 @MainActor
 final class HapticPlayerViewModel: ObservableObject {
@@ -8,8 +9,6 @@ final class HapticPlayerViewModel: ObservableObject {
     @Published var isPlaying = false
     @Published var intensity: Double = 0.0
     @Published var userGain: Double = 1.0
-
-    // NEW: выключает звук, оставляет только вибрации
     @Published var hapticsOnly: Bool = false
 
     private let engine = AudioHapticEngine()
@@ -55,30 +54,10 @@ final class HapticPlayerViewModel: ObservableObject {
         }
     }
 
+    func testHaptic() {
+        engine.testHaptic()
+    }
+
     func play() {
         guard let url = audioURL else { return }
-        if isPlaying { return }
 
-        do {
-            try engine.start(
-                url: url,
-                gain: userGain,
-                hapticsOnly: hapticsOnly
-            ) { [weak self] currentIntensity in
-                Task { @MainActor in
-                    self?.intensity = currentIntensity
-                }
-            }
-            isPlaying = true
-        } catch {
-            print("Play error:", error)
-            isPlaying = false
-        }
-    }
-
-    func stop() {
-        engine.stop()
-        isPlaying = false
-        intensity = 0.0
-    }
-}
