@@ -14,7 +14,8 @@ jobs:
         run: brew install xcodegen
 
       - name: Generate Xcode project
-        run: xcodegen generate
+        run: |
+          xcodegen generate --spec project.yml
 
       - name: Build unsigned (no codesign)
         run: |
@@ -35,11 +36,7 @@ jobs:
       - name: Package .app -> .ipa
         run: |
           set -e
-          APP_PATH=$(find build -path "*Release-iphoneos/*.app" -print -quit)
-          if [ -z "$APP_PATH" ]; then
-            # иногда xcodebuild кладёт в DerivedData, попробуем найти там
-            APP_PATH=$(find . -path "*Release-iphoneos/*.app" -print -quit)
-          fi
+          APP_PATH=$(find DerivedData/Build/Products -maxdepth 4 -name "*.app" -print -quit)
           if [ -z "$APP_PATH" ]; then
             echo "APP not found"; exit 1
           fi
