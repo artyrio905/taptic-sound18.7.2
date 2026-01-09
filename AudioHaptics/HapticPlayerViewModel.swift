@@ -1,6 +1,5 @@
 import Foundation
 import SwiftUI
-import UIKit
 
 @MainActor
 final class HapticPlayerViewModel: ObservableObject {
@@ -32,9 +31,9 @@ final class HapticPlayerViewModel: ObservableObject {
         defer { if access { url.stopAccessingSecurityScopedResource() } }
 
         let ext = url.pathExtension.lowercased()
-        let allowed = ["mp3","m4a","wav","aiff","aac","caf","flac","ogg"]
+        let allowed = ["mp3", "m4a", "wav", "aiff", "aac", "caf", "flac", "ogg"]
         guard allowed.contains(ext) else {
-            print("Not supported extension:", ext, url)
+            print("Not supported extension:", ext)
             return
         }
 
@@ -60,4 +59,28 @@ final class HapticPlayerViewModel: ObservableObject {
 
     func play() {
         guard let url = audioURL else { return }
+        if isPlaying { return }
 
+        do {
+            try engine.start(
+                url: url,
+                gain: userGain,
+                hapticsOnly: hapticsOnly
+            ) { [weak self] currentIntensity in
+                Task { @MainActor in
+                    self?.intensity = currentIntensity
+                }
+            }
+            isPlaying = true
+        } catch {
+            print("Play error:", error)
+            isPlaying = false
+        }
+    }
+
+    func stop() {
+        engine.stop()
+        isPlaying = false
+        intensity = 0.0
+    }
+}
