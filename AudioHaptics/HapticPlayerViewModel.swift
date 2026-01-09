@@ -8,6 +8,7 @@ final class HapticPlayerViewModel: ObservableObject {
     @Published var isPlaying = false
     @Published var intensity: Double = 0.0
     @Published var userGain: Double = 1.0
+    @Published var hapticsOnly: Bool = false
 
     private let engine = AudioHapticEngine()
 
