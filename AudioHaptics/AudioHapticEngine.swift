@@ -12,11 +12,10 @@ final class AudioHapticEngine {
 
     private var onIntensity: ((Double) -> Void)?
 
-    // haptics-only mode
-    private var hapticsTimer: DispatchSourceTimer?
-    private var fileReader: AVAudioFile?
-    private var readFramePos: AVAudioFramePosition = 0
-    private var framesPerTick: AVAudioFrameCount = 1024
+    private var currentGain: Double = 1.0
+    private var hapticsOnly: Bool = false
+
+    // MARK: - Public
 
     func start(
         url: URL,
@@ -25,42 +24,50 @@ final class AudioHapticEngine {
         onIntensity: @escaping (Double) -> Void
     ) throws {
         self.onIntensity = onIntensity
+        self.currentGain = gain
+        self.hapticsOnly = hapticsOnly
 
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .default)
+        try session.setCategory(.playback, mode: .default, options: [])
         try session.setActive(true)
 
+        // Haptics
         try startHapticsIfPossible()
         try startContinuousHaptic()
 
+        // Audio
+        try startAudioAndTap(url: url)
+
+        // If "haptics only" -> mute output but keep playback running
         if hapticsOnly {
-            try startHapticsOnlyMode(url: url, gain: gain)
+            player.volume = 0.0
+            audioEngine.mainMixerNode.outputVolume = 0.0
         } else {
-            try startAudioAndTapMode(url: url, gain: gain)
+            player.volume = 1.0
+            audioEngine.mainMixerNode.outputVolume = 1.0
         }
     }
 
     func stop() {
-        hapticsTimer?.cancel()
-        hapticsTimer = nil
-        fileReader = nil
-        readFramePos = 0
+        // remove tap
+        player.removeTap(onBus: 0)
 
-        audioEngine.mainMixerNode.removeTap(onBus: 0)
+        // stop audio
         player.stop()
         audioEngine.stop()
+        audioEngine.reset()
 
+        // stop haptics
         try? hapticPlayer?.stop(atTime: 0)
         hapticPlayer = nil
-
         hapticEngine?.stop(completionHandler: nil)
         hapticEngine = nil
 
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+
         onIntensity?(0.0)
     }
 
-    // MARK: - Test (кнопка Test)
     func testHaptic() {
         DispatchQueue.main.async {
             let gen = UINotificationFeedbackGenerator()
@@ -74,6 +81,7 @@ final class AudioHapticEngine {
             if hapticEngine == nil {
                 try startHapticsIfPossible()
             }
+
             let e1 = CHHapticEvent(
                 eventType: .hapticTransient,
                 parameters: [
@@ -82,16 +90,18 @@ final class AudioHapticEngine {
                 ],
                 relativeTime: 0
             )
+
             let pattern = try CHHapticPattern(events: [e1], parameters: [])
             let p = try hapticEngine?.makePlayer(with: pattern)
             try p?.start(atTime: 0)
         } catch {
-            // fallback выше уже есть
+            // ignore
         }
     }
 
-    // MARK: - Mode A: звук + tap-анализ
-    private func startAudioAndTapMode(url: URL, gain: Double) throws {
+    // MARK: - Audio + Tap (корректный источник анализа)
+
+    private func startAudioAndTap(url: URL) throws {
         let file = try AVAudioFile(forReading: url)
 
         audioEngine.stop()
@@ -100,93 +110,66 @@ final class AudioHapticEngine {
         audioEngine.attach(player)
         audioEngine.connect(player, to: audioEngine.mainMixerNode, format: file.processingFormat)
 
-        let bus = 0
-        let format = audioEngine.mainMixerNode.outputFormat(forBus: bus)
-
-        audioEngine.mainMixerNode.removeTap(onBus: bus)
-        audioEngine.mainMixerNode.installTap(onBus: bus, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+        // IMPORTANT: Tap на PLAYER, а не на mainMixer
+        player.removeTap(onBus: 0)
+        player.installTap(onBus: 0, bufferSize: 1024, format: file.processingFormat) { [weak self] buffer, _ in
             guard let self else { return }
             let (amp, brightness) = self.features(buffer: buffer)
-            self.pushHaptics(amp: amp, brightness: brightness, gain: gain)
+            self.pushHaptics(amp: amp, brightness: brightness, gain: self.currentGain)
         }
 
         try audioEngine.start()
+
         player.scheduleFile(file, at: nil, completionHandler: nil)
         player.play()
     }
 
-    // MARK: - Mode B: только хаптик (без звука)
-    private func startHapticsOnlyMode(url: URL, gain: Double) throws {
-        let file = try AVAudioFile(forReading: url)
-        fileReader = file
-        readFramePos = 0
-
-        let sr = file.processingFormat.sampleRate
-        let tickHz: Double = 120
-        framesPerTick = AVAudioFrameCount(max(256, Int(sr / tickHz)))
-
-        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInteractive))
-        timer.schedule(deadline: .now(), repeating: 1.0 / tickHz)
-
-        timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            guard let file = self.fileReader else { return }
-
-            let format = file.processingFormat
-            let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: self.framesPerTick)!
-
-            do {
-                file.framePosition = self.readFramePos
-                try file.read(into: buf, frameCount: self.framesPerTick)
-                self.readFramePos += AVAudioFramePosition(buf.frameLength)
-
-                if buf.frameLength == 0 {
-                    self.stop()
-                    return
-                }
-
-                let (amp, brightness) = self.features(buffer: buf)
-                self.pushHaptics(amp: amp, brightness: brightness, gain: gain)
-            } catch {
-                self.stop()
-            }
-        }
-
-        hapticsTimer = timer
-        timer.resume()
-    }
-
     // MARK: - Features
+
     private func features(buffer: AVAudioPCMBuffer) -> (amp: Double, brightness: Double) {
-        guard let channel = buffer.floatChannelData?[0] else { return (0, 0) }
+        guard let data = buffer.floatChannelData else { return (0, 0) }
+
+        let channels = Int(buffer.format.channelCount)
         let n = Int(buffer.frameLength)
         if n == 0 { return (0, 0) }
 
         var sumSq: Double = 0
         var diffSum: Double = 0
 
-        var prev = Double(channel[0])
-        for i in 0..<n {
-            let x = Double(channel[i])
-            sumSq += x * x
-            diffSum += abs(x - prev)
-            prev = x
+        for ch in 0..<max(1, channels) {
+            var prev = Double(data[ch][0])
+            for i in 0..<n {
+                let x = Double(data[ch][i])
+                sumSq += x * x
+                diffSum += abs(x - prev)
+                prev = x
+            }
         }
 
-        let rms = sqrt(sumSq / Double(n))
-        let brightness = min(1.0, (diffSum / Double(n)) * 30.0)
+        let denom = Double(n * max(1, channels))
+        let rms = sqrt(sumSq / denom)
+
+        // "яркость" = сколько резких изменений
+        let brightness = min(1.0, (diffSum / denom) * 25.0)
+
         return (rms, brightness)
     }
 
     private func pushHaptics(amp: Double, brightness: Double, gain: Double) {
-        let intensity = min(1.0, max(0.12, (amp * 18.0) * gain))
-        let sharp = min(1.0, max(0.10, 0.10 + brightness * 0.90))
+        // Агрессивнее и приятнее, чем линейно
+        // amp обычно маленький, поэтому вытягиваем pow()
+        let x = amp * 55.0 * max(0.1, gain)
+        let shaped = pow(max(0.0, x), 0.65)
+
+        let intensity = min(1.0, max(0.12, shaped))
+        let sharp = min(1.0, max(0.10, 0.20 + brightness * 0.80))
 
         onIntensity?(intensity)
         updateHaptics(intensity: intensity, sharpness: sharp)
     }
 
     // MARK: - Haptics
+
     private func startHapticsIfPossible() throws {
         guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
 
@@ -196,6 +179,7 @@ final class AudioHapticEngine {
         engine.stoppedHandler = { reason in
             print("Haptics stopped:", reason.rawValue)
         }
+
         engine.resetHandler = { [weak self] in
             guard let self else { return }
             do {
@@ -213,42 +197,30 @@ final class AudioHapticEngine {
     private func startContinuousHaptic() throws {
         guard let hapticEngine else { return }
 
-        let intensity = CHHapticEventParameter(parameterID: .hapticIntensity, value: 0.0)
-        let sharpness = CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.3)
+        // Длинный continuous, потом меняем интенсивность/резкость динамически
+        let i = CHHapticEventParameter(parameterID: .hapticIntensity, value: 0.0)
+        let s = CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.3)
 
         let event = CHHapticEvent(
             eventType: .hapticContinuous,
-            parameters: [intensity, sharpness],
+            parameters: [i, s],
             relativeTime: 0,
-            duration: 120
+            duration: 3600 // час, пофиг — мы остановим сами
         )
 
         let pattern = try CHHapticPattern(events: [event], parameters: [])
         hapticPlayer = try hapticEngine.makeAdvancedPlayer(with: pattern)
         try hapticPlayer?.start(atTime: 0)
     }
+
     private func updateHaptics(intensity: Double, sharpness: Double) {
         guard let hapticPlayer else { return }
 
         let params = [
-            CHHapticDynamicParameter(
-                parameterID: .hapticIntensityControl,
-                value: Float(intensity),
-                relativeTime: 0
-            ),
-            CHHapticDynamicParameter(
-                parameterID: .hapticSharpnessControl,
-                value: Float(sharpness),
-                relativeTime: 0
-            )
+            CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: Float(intensity), relativeTime: 0),
+            CHHapticDynamicParameter(parameterID: .hapticSharpnessControl, value: Float(sharpness), relativeTime: 0)
         ]
 
-        do {
-            try hapticPlayer.sendParameters(params, atTime: 0)
-        } catch {
-            // если хочешь — можно логировать
-            // print("sendParameters error:", error)
-        }
+        try? hapticPlayer.sendParameters(params, atTime: 0)
     }
-
 }
