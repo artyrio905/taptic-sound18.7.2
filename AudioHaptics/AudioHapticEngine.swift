@@ -227,4 +227,28 @@ final class AudioHapticEngine {
         hapticPlayer = try hapticEngine.makeAdvancedPlayer(with: pattern)
         try hapticPlayer?.start(atTime: 0)
     }
+    private func updateHaptics(intensity: Double, sharpness: Double) {
+        guard let hapticPlayer else { return }
+
+        let params = [
+            CHHapticDynamicParameter(
+                parameterID: .hapticIntensityControl,
+                value: Float(intensity),
+                relativeTime: 0
+            ),
+            CHHapticDynamicParameter(
+                parameterID: .hapticSharpnessControl,
+                value: Float(sharpness),
+                relativeTime: 0
+            )
+        ]
+
+        do {
+            try hapticPlayer.sendParameters(params, atTime: 0)
+        } catch {
+            // если хочешь — можно логировать
+            // print("sendParameters error:", error)
+        }
+    }
+
 }
